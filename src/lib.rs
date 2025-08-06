@@ -6,7 +6,7 @@ use core::ptr;
 use esp_idf_sys::{
     esp_ota_abort, esp_ota_begin, esp_ota_end, esp_ota_get_next_update_partition, esp_ota_handle_t,
     esp_ota_mark_app_invalid_rollback_and_reboot, esp_ota_mark_app_valid_cancel_rollback,
-    esp_ota_set_boot_partition, esp_ota_write, esp_partition_t, esp_restart, ESP_ERR_FLASH_OP_FAIL,
+    esp_ota_set_boot_partition, esp_partition_t, esp_restart, ESP_ERR_FLASH_OP_FAIL,
     ESP_ERR_FLASH_OP_TIMEOUT, ESP_ERR_INVALID_ARG, ESP_ERR_INVALID_SIZE, ESP_ERR_INVALID_STATE,
     ESP_ERR_NOT_FOUND, ESP_ERR_NO_MEM, ESP_ERR_OTA_PARTITION_CONFLICT, ESP_ERR_OTA_ROLLBACK_FAILED,
     ESP_ERR_OTA_ROLLBACK_INVALID_STATE, ESP_ERR_OTA_SELECT_INFO_INVALID,
@@ -145,17 +145,44 @@ impl OtaUpdate {
         })
     }
 
-    /// Write app image data to partition.
+    /// Write app image data to partition. Mutually exlusive with [`write_with_offset`](OtaUpdate::write_with_offset).
     ///
     /// This method can be called multiple times as data is received during the OTA operation.
     /// Data is written sequentially to the partition.
     ///
     /// The format of the app image can be read about in the main README and crate documentation.
+    #[cfg(not(feature = "ota_write_with_offset"))]
     pub fn write(&mut self, app_image_chunk: &[u8]) -> Result<()> {
         let chunk_ptr = app_image_chunk.as_ptr() as *const _;
         let chunk_len = app_image_chunk.len();
 
-        match unsafe { esp_ota_write(self.ota_handle, chunk_ptr, chunk_len) } {
+        match unsafe { esp_idf_sys::esp_ota_write(self.ota_handle, chunk_ptr, chunk_len) } {
+            ESP_OK => Ok(()),
+            ESP_ERR_INVALID_ARG => panic!("Invalid OTA handle"),
+            ESP_ERR_OTA_VALIDATE_FAILED => Err(Error::from_kind(ErrorKind::InvalidMagicByte)),
+            ESP_ERR_FLASH_OP_TIMEOUT => Err(Error::from_kind(ErrorKind::FlashTimeout)),
+            ESP_ERR_FLASH_OP_FAIL => Err(Error::from_kind(ErrorKind::FlashFailed)),
+            ESP_ERR_OTA_SELECT_INFO_INVALID => {
+                Err(Error::from_kind(ErrorKind::InvalidOtaPartitionData))
+            }
+            code => panic!("Unexpected esp_ota_write return code: {code}"),
+        }
+    }
+
+    /// Write app image data to partition at a specific offset. Mutually exlusive with [`write`](OtaUpdate::write). Enable feature `ota_write_with_offset` to use this method.
+    ///
+    /// This method can be called multiple times as data is received during the OTA operation.
+    /// Data can be written out of order to the partition.
+    ///
+    /// The format of the app image can be read about in the main README and crate documentation.
+    #[cfg(feature = "ota_write_with_offset")]
+    pub fn write_with_offset(&mut self, app_image_chunk: &[u8], offset: u32) -> Result<()> {
+        let chunk_ptr = app_image_chunk.as_ptr() as *const _;
+        let chunk_len = app_image_chunk.len();
+
+        match unsafe {
+            esp_idf_sys::esp_ota_write_with_offset(self.ota_handle, chunk_ptr, chunk_len, offset)
+        } {
             ESP_OK => Ok(()),
             ESP_ERR_INVALID_ARG => panic!("Invalid OTA handle"),
             ESP_ERR_OTA_VALIDATE_FAILED => Err(Error::from_kind(ErrorKind::InvalidMagicByte)),
